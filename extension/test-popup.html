@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>ChatSync Popup Test</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+  </style>
+</head>
+<body>
+  <h2>ChatSync Extension Test</h2>
+  <div id="status"></div>
+  
+  <script>
+    const statusDiv = document.getElementById('status');
+    
+    function addStatus(message, type = 'info') {
+      const div = document.createElement('div');
+      div.className = `status ${type}`;
+      div.textContent = message;
+      statusDiv.appendChild(div);
+    }
+    
+    // Test extension APIs
+    if (typeof chrome !== 'undefined') {
+      addStatus('✅ Chrome extension APIs available', 'success');
+      
+      // Test runtime
+      if (chrome.runtime) {
+        addStatus('✅ Chrome runtime API available', 'success');
+      } else {
+        addStatus('❌ Chrome runtime API not available', 'error');
+      }
+      
+      // Test storage
+      if (chrome.storage) {
+        addStatus('✅ Chrome storage API available', 'success');
+      } else {
+        addStatus('❌ Chrome storage API not available', 'error');
+      }
+      
+      // Test tabs
+      if (chrome.tabs) {
+        addStatus('✅ Chrome tabs API available', 'success');
+      } else {
+        addStatus('❌ Chrome tabs API not available', 'error');
+      }
+      
+    } else {
+      addStatus('❌ Chrome extension APIs not available', 'error');
+      addStatus('This needs to be loaded as a Chrome extension', 'error');
+    }
+  </script>
+</body>
+</html>

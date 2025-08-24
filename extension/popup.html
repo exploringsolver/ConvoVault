@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ChatSync</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      width: 380px;
+      min-height: 500px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    
+    .logo {
+      font-size: 18px;
+      font-weight: 600;
+    }
+    
+    .sync-btn {
+      background: rgba(255,255,255,0.2);
+      border: 1px solid rgba(255,255,255,0.3);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 12px;
+      transition: all 0.2s;
+    }
+    
+    .sync-btn:hover {
+      background: rgba(255,255,255,0.3);
+    }
+    
+    .sync-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .container {
+      padding: 20px;
+    }
+    
+    .auth-section {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    .form-group {
+      margin-bottom: 16px;
+    }
+    
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+      color: #374151;
+    }
+    
+    input[type="email"],
+    input[type="password"],
+    input[type="text"],
+    input[type="url"],
+    select {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+    
+    input:focus, select:focus {
+      outline: none;
+      border-color: #667eea;
+      box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+    }
+    
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    
+    .btn-primary {
+      background: #667eea;
+      color: white;
+    }
+    
+    .btn-primary:hover {
+      background: #5a67d8;
+    }
+    
+    .btn-secondary {
+      background: #e5e7eb;
+      color: #374151;
+      margin-top: 8px;
+    }
+    
+    .btn-secondary:hover {
+      background: #d1d5db;
+    }
+    
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    .tabs {
+      display: flex;
+      background: white;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    
+    .tab {
+      flex: 1;
+      padding: 12px;
+      text-align: center;
+      cursor: pointer;
+      border: none;
+      background: #f8fafc;
+      color: #64748b;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.2s;
+    }
+    
+    .tab.active {
+      background: #667eea;
+      color: white;
+    }
+    
+    .chat-list {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    
+    .chat-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #f1f5f9;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    
+    .chat-item:last-child {
+      border-bottom: none;
+    }
+    
+    .chat-item:hover {
+      background: #f8fafc;
+    }
+    
+    .chat-title {
+      font-weight: 500;
+      color: #1e293b;
+      margin-bottom: 4px;
+      display: -webkit-box;
+      -webkit-line-clamp: 1;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    
+    .chat-meta {
+      font-size: 12px;
+      color: #64748b;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .provider-badge {
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+    
+    .provider-chatgpt {
+      background: #e0f2fe;
+      color: #0277bd;
+    }
+    
+    .provider-claude {
+      background: #fff3e0;
+      color: #f57c00;
+    }
+    
+    .provider-perplexity {
+      background: #f3e5f5;
+      color: #7b1fa2;
+    }
+    
+    .provider-user {
+      background: #e8f5e8;
+      color: #2e7d32;
+    }
+    
+    .search-box {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      margin-bottom: 16px;
+    }
+    
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    
+    .stat-card {
+      background: white;
+      padding: 12px;
+      border-radius: 6px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+    
+    .stat-number {
+      font-size: 20px;
+      font-weight: 600;
+      color: #667eea;
+    }
+    
+    .stat-label {
+      font-size: 12px;
+      color: #64748b;
+      margin-top: 4px;
+    }
+    
+    .error {
+      background: #fee2e2;
+      color: #dc2626;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    
+    .success {
+      background: #dcfce7;
+      color: #16a34a;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 16px;
+    }
+    
+    .hidden {
+      display: none;
+    }
+    
+    .loading {
+      text-align: center;
+      padding: 20px;
+      color: #64748b;
+    }
+    
+    .manual-add {
+      background: white;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    .add-toggle {
+      width: 100%;
+      padding: 8px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      color: #64748b;
+      cursor: pointer;
+      text-align: center;
+      margin-bottom: 16px;
+    }
+    
+    .add-toggle:hover {
+      background: #f1f5f9;
+    }
+    
+    .filters {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    
+    .filters select {
+      flex: 1;
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    
+    .scrape-status {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      transition: all 0.3s;
+    }
+    
+    .scrape-status.info {
+      background: #e0f7fa;
+      color: #006064;
+      border: 1px solid #b2ebf2;
+    }
+    
+    .scrape-status.success {
+      background: #e8f5e8;
+      color: #2e7d32;
+      border: 1px solid #c8e6c9;
+    }
+    
+    .scrape-status.error {
+      background: #ffebee;
+      color: #c62828;
+      border: 1px solid #ffcdd2;
+    }
+    
+    .scrape-section {
+      background: white;
+      padding: 16px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    
+    .scrape-info {
+      font-size: 12px;
+      color: #64748b;
+      margin-bottom: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo">ChatSync</div>
+    <button id="syncBtn" class="sync-btn">Sync Now</button>
+  </div>
+  
+  <div class="container">
+    <!-- Auth Section -->
+    <div id="authSection" class="auth-section">
+      <div id="loginForm">
+        <div id="errorMsg" class="error hidden"></div>
+        <div id="successMsg" class="success hidden"></div>
+        
+        <div class="form-group">
+          <label for="email">Email</label>
+          <input type="email" id="email" placeholder="Enter your email">
+        </div>
+        
+        <div class="form-group">
+          <label for="password">Password</label>
+          <input type="password" id="password" placeholder="Enter your password">
+        </div>
+        
+        <button id="loginBtn" class="btn btn-primary">Login</button>
+        <button id="registerBtn" class="btn btn-secondary">Register</button>
+      </div>
+      
+      <div id="loggedInView" class="hidden">
+        <div id="userInfo" class="form-group">
+          <label>Logged in as: <span id="userEmail"></span></label>
+        </div>
+        <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+      </div>
+    </div>
+    
+    <!-- Auto Scrape Status -->
+    <div class="scrape-section">
+      <div class="scrape-info">Auto-scraping active page for chat history...</div>
+      <div id="scrapeStatus" class="scrape-status hidden"></div>
+    </div>
+
+    <!-- Stats -->
+    <div id="statsSection" class="stats-grid">
+      <div class="stat-card">
+        <div id="totalChats" class="stat-number">0</div>
+        <div class="stat-label">Total Chats</div>
+      </div>
+      <div class="stat-card">
+        <div id="unsyncedChats" class="stat-number">0</div>
+        <div class="stat-label">Unsynced</div>
+      </div>
+    </div>
+    
+    <!-- Manual Add Chat -->
+    <div class="manual-add">
+      <div id="addToggle" class="add-toggle">+ Add Chat Manually</div>
+      <div id="addForm" class="hidden">
+        <div class="form-group">
+          <label for="chatTitle">Title</label>
+          <input type="text" id="chatTitle" placeholder="Chat title">
+        </div>
+        <div class="form-group">
+          <label for="chatUrl">URL</label>
+          <input type="url" id="chatUrl" placeholder="https://...">
+        </div>
+        <div class="form-group">
+          <label for="chatCategory">Category</label>
+          <input type="text" id="chatCategory" placeholder="Research, Code, etc.">
+        </div>
+        <button id="addChatBtn" class="btn btn-primary">Add Chat</button>
+      </div>
+    </div>
+    
+    <!-- Tabs -->
+    <div class="tabs">
+      <button id="allTab" class="tab active">All</button>
+      <button id="chatgptTab" class="tab">ChatGPT</button>
+      <button id="claudeTab" class="tab">Claude</button>
+      <button id="perplexityTab" class="tab">Perplexity</button>
+    </div>
+    
+    <!-- Search and Filters -->
+    <input type="text" id="searchBox" class="search-box" placeholder="Search chats...">
+    
+    <div class="filters">
+      <select id="categoryFilter">
+        <option value="">All Categories</option>
+      </select>
+      <select id="subjectFilter">
+        <option value="">All Subjects</option>
+      </select>
+    </div>
+    
+    <!-- Chat List -->
+    <div id="chatList" class="chat-list">
+      <div id="loading" class="loading">Loading chats...</div>
+    </div>
+  </div>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
