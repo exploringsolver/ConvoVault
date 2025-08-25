@@ -1,12 +1,11 @@
 // Background Script - Service Worker for ChatSync Extension
 import { ChatStorage } from './storage.js';
 
-
 class ChatSyncBackground {
   constructor() {
     this.storage = new ChatStorage();
     this.authToken = null;
-    this.backendUrl = 'http://localhost:8000'; // Default backend URL
+    this.backendUrl = 'http://localhost:3000'; // Default backend URL
     this.syncInProgress = false;
   }
 
@@ -23,12 +22,16 @@ class ChatSyncBackground {
     }
 
     console.log('ChatSync background script initialized');
+    
+    // Auto-fetch chats if logged in
+    if (this.authToken) {
+      await this.fetchAndMergeBackendChats();
+    }
   }
 
   // Handle messages from content scripts and popup
   handleMessage(request, sender, sendResponse) {
     console.log('Background received message:', request);
-    console.log("TYPE RECEIVED:", JSON.stringify(request.type));
 
     switch (request.type) {
       case 'CHATS_EXTRACTED':
@@ -38,59 +41,59 @@ class ChatSyncBackground {
 
       case 'MANUAL_SCRAPE':
         this.handleManualScrape(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'AUTO_SCRAPE':
         this.handleAutoScrape(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'SYNC_NOW':
         this.handleSyncNow(sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'LOGIN':
         this.handleLogin(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'REGISTER':
         this.handleRegister(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'LOGOUT':
         this.handleLogout(sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'GET_CHATS':
         this.handleGetChats(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'UPDATE_CHAT':
         this.handleUpdateChat(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'DELETE_CHAT':
         this.handleDeleteChat(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'SEARCH_CHATS':
         this.handleSearchChats(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'GET_STATS':
         this.handleGetStats(sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'ADD_MANUAL_CHAT':
         this.handleAddManualChat(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'GET_SETTING':
         this.handleGetSetting(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       case 'SET_SETTING':
         this.handleSetSetting(request, sendResponse);
-        return true; // Will respond asynchronously
+        return true;
 
       default:
         sendResponse({ error: 'Unknown message type' });
@@ -103,9 +106,6 @@ class ChatSyncBackground {
       const { chats, provider, url } = request;
       console.log(`[HandleExtracted] Saving ${chats.length} chats from ${provider}`);
       
-      // Enhanced logging for scraped data
-      this.logScrapedChats(chats, provider, url);
-
       const savedChats = await this.storage.saveChats(chats);
       console.log(`[HandleExtracted] Saved ${savedChats.length} chats to local storage`);
 
@@ -117,25 +117,6 @@ class ChatSyncBackground {
     } catch (error) {
       console.error('[HandleExtracted] Error handling extracted chats:', error);
     }
-  }
-
-  // Enhanced logging for scraped chats
-  logScrapedChats(chats, provider, url) {
-    console.log(`\n=== BACKGROUND: CHATS FROM ${provider.toUpperCase()} ===`);
-    console.log(`Source URL: ${url}`);
-    console.log(`Total chats: ${chats.length}`);
-    
-    chats.forEach((chat, index) => {
-      console.log(`\n[${index + 1}] "${chat.title}"`);
-      console.log(`    Link: ${chat.link}`);
-      console.log(`    Provider: ${chat.provider}`);
-      console.log(`    Timestamp: ${chat.timestamp}`);
-      if (chat.description) console.log(`    Description: ${chat.description}`);
-      if (chat.lastMessage) console.log(`    Last Message: ${chat.lastMessage}`);
-      if (chat.date) console.log(`    Date: ${chat.date}`);
-      console.log(`    Synced: ${chat.synced}`);
-    });
-    console.log(`\n=== END ${provider.toUpperCase()} BACKGROUND LOG ===\n`);
   }
 
   // Handle auto scrape request from popup
@@ -160,15 +141,9 @@ class ChatSyncBackground {
         }, (response) => {
           if (chrome.runtime.lastError) {
             console.error('[AutoScrape] Content script communication failed:', chrome.runtime.lastError.message);
-            
-            // Try direct DOM scraping as fallback
             this.fallbackDirectScraping(tabId, provider, sendResponse);
           } else if (response && response.chats) {
             console.log(`[AutoScrape] Retrieved ${response.chats.length} chats from content script`);
-            
-            // Log the scraped data in background
-            this.logScrapedChats(response.chats, provider, 'Auto-scraped');
-            
             sendResponse({ 
               chats: response.chats,
               message: `Successfully scraped ${response.chats.length} chats` 
@@ -227,7 +202,6 @@ class ChatSyncBackground {
         // Store the chats
         if (chats.length > 0) {
           await this.storage.saveChats(chats);
-          this.logScrapedChats(chats, provider, 'Fallback-scraped');
         }
         
         sendResponse({ 
@@ -457,7 +431,9 @@ class ChatSyncBackground {
       console.log(`Syncing ${unsyncedChats.length} unsynced chats`);
 
       if (unsyncedChats.length === 0) {
-        sendResponse({ message: 'No chats to sync', synced: 0 });
+        // Still fetch backend chats even if no local chats to sync
+        await this.fetchAndMergeBackendChats();
+        sendResponse({ message: 'No local chats to sync, but fetched latest from server', synced: 0 });
         this.syncInProgress = false;
         return;
       }
@@ -483,7 +459,7 @@ class ChatSyncBackground {
       await this.storage.markChatsSynced(chatIds);
 
       // Fetch and merge any new chats from backend
-      await this.fetchBackendChats();
+      await this.fetchAndMergeBackendChats();
 
       sendResponse({
         message: `Successfully synced ${unsyncedChats.length} chats`,
@@ -498,10 +474,10 @@ class ChatSyncBackground {
     }
   }
 
-  // Fetch chats from backend and merge with local
-  async fetchBackendChats() {
+  // Fetch chats from backend and merge with local storage
+  async fetchAndMergeBackendChats() {
     try {
-      const response = await fetch(`${this.backendUrl}/api/chats`, {
+      const response = await fetch(`${this.backendUrl}/api/chats?limit=1000`, {
         headers: {
           'Authorization': `Bearer ${this.authToken}`
         }
@@ -509,8 +485,23 @@ class ChatSyncBackground {
 
       if (response.ok) {
         const backendChats = await response.json();
-        // Mark backend chats as synced
-        const chatsToSave = backendChats.map(chat => ({ ...chat, synced: true }));
+        console.log(`Fetching ${backendChats.length} chats from backend`);
+        
+        // Convert backend chats to local format and mark as synced
+        const chatsToSave = backendChats.map(chat => ({
+          provider: chat.provider,
+          title: chat.title,
+          link: chat.link,
+          preview: chat.preview,
+          description: chat.description,
+          last_message: chat.last_message,
+          date: chat.date,
+          category: chat.category,
+          subject: chat.subject,
+          timestamp: chat.timestamp,
+          synced: true // Mark backend chats as synced
+        }));
+        
         await this.storage.saveChats(chatsToSave);
         console.log(`Merged ${backendChats.length} chats from backend`);
       }
@@ -541,7 +532,13 @@ class ChatSyncBackground {
           const chatIds = unsyncedChats.map(chat => chat.id);
           await this.storage.markChatsSynced(chatIds);
           console.log(`Background sync: ${unsyncedChats.length} chats synced`);
+          
+          // Also fetch any new chats from backend
+          await this.fetchAndMergeBackendChats();
         }
+      } else {
+        // Even if no local chats to sync, fetch backend chats periodically
+        await this.fetchAndMergeBackendChats();
       }
     } catch (error) {
       console.error('Background sync error:', error);
@@ -575,7 +572,7 @@ class ChatSyncBackground {
       await this.storage.setSetting('authToken', this.authToken);
 
       // Fetch backend chats after login
-      await this.fetchBackendChats();
+      await this.fetchAndMergeBackendChats();
 
       sendResponse({ success: true, user: result.user });
 
@@ -627,45 +624,34 @@ class ChatSyncBackground {
   async handleGetChats(request, sendResponse) {
     try {
       const { provider, category, subject } = request;
-      console.log("[handleGetChats] Incoming request:", JSON.stringify(request));
 
       let chats;
 
       if (provider) {
-        console.log(`[handleGetChats] Fetching chats for provider: ${provider}`);
         chats = await this.storage.getChatsByProvider(provider);
       } else {
-        console.log("[handleGetChats] Fetching all chats");
         chats = await this.storage.getAllChats();
       }
 
-      console.log(`[handleGetChats] Initial chats count: ${chats.length}`);
-
       // Filter by category
       if (category) {
-        console.log(`[handleGetChats] Filtering by category: ${category}`);
         chats = chats.filter(chat => chat.category === category);
-        console.log(`[handleGetChats] After category filter: ${chats.length}`);
       }
 
       // Filter by subject
       if (subject) {
-        console.log(`[handleGetChats] Filtering by subject: ${subject}`);
         chats = chats.filter(chat => chat.subject === subject);
-        console.log(`[handleGetChats] After subject filter: ${chats.length}`);
       }
 
       // Sort by timestamp (newest first)
       chats.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
-      console.log(`[handleGetChats] Final chats count: ${chats.length}`);
 
       sendResponse({ chats });
     } catch (error) {
-      console.error("[handleGetChats] Error:", error);
+      console.error("Error getting chats:", error);
       sendResponse({ error: error.message });
     }
   }
-
 
   // Handle update chat
   async handleUpdateChat(request, sendResponse) {
@@ -703,7 +689,6 @@ class ChatSyncBackground {
   // Handle get stats
   async handleGetStats(sendResponse) {
     try {
-      console.log("Getting stats");
       const stats = await this.storage.getStats();
       sendResponse({ stats });
     } catch (error) {
@@ -720,8 +705,8 @@ class ChatSyncBackground {
         provider: 'user',
         title,
         link,
-        category,
-        subject,
+        category: category || 'General',
+        subject: subject || 'Other',
         preview,
         timestamp: new Date().toISOString(),
         synced: false

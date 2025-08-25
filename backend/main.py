@@ -6,6 +6,11 @@ from sqlalchemy import func
 from typing import List, Optional
 from datetime import datetime, timedelta
 import os
+import json
+from google import genai
+import re
+from dotenv import load_dotenv
+
 
 from models import (
     User, Chat, UserCreate, UserLogin, UserResponse, 
@@ -17,13 +22,19 @@ from auth import (
     authenticate_user, create_user, get_current_user, 
     create_access_token, get_user_by_email
 )
-
+load_dotenv()
 # Initialize FastAPI app
 app = FastAPI(
     title="ChatSync API",
     description="Backend API for ChatSync browser extension",
     version="1.0.0"
 )
+
+# Configure Gemini AI (add your API key)
+# GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyDvXBAfo3ImoG0C_YzIQnxNugFfqjyrVHI")
+GEMINI_API_KEY = "your-gemini-api-key-here"
+if GEMINI_API_KEY != "your-gemini-api-key-here":
+    genai.configure(api_key=GEMINI_API_KEY)
 
 # CORS middleware for browser extension
 app.add_middleware(
@@ -43,6 +54,74 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     await disconnect_database()
+
+# AI categorization function
+def categorize_chat_with_ai(title: str, preview: str = None, description: str = None) -> tuple:
+    """Use Gemini AI to categorize chat title into category and subject"""
+    try:
+        print(f"[Gemini] GEMINI_API_KEY: {GEMINI_API_KEY}")  # LOGGING
+        if GEMINI_API_KEY == "your-gemini-api-key-here":
+            print("[Gemini] Using fallback categorization (no API key set).")  # LOGGING
+            return categorize_chat_fallback(title)
+
+        print("[Gemini] Initializing Gemini Client...")  # LOGGING
+        client = genai.Client()
+
+        # Create context for AI
+        context = f"Title: {title}"
+        if preview:
+            context += f"\nPreview: {preview[:200]}"
+        if description:
+            context += f"\nDescription: {description[:200]}"
+
+        prompt = f"""Analyze this chat and assign it to appropriate category and subject:
+
+{context}
+
+Return ONLY a JSON object with this exact format:
+{{"category": "category_name", "subject": "subject_name"}}
+
+Categories (choose one): Programming, Research, Writing, Business, Education, Personal, Creative, Technical, General
+Subjects (choose one that fits the content): Python, JavaScript, Web Development, AI/ML, Data Science, Marketing, Finance, Health, Travel, Career, Study, Project, Debug, Analysis, Planning, Other, or name of the specific topic or project name it relates to like "E-commerce", "Blogging", "App Development", etc. or like a custom project name.
+
+Example: {{"category": "Programming", "subject": "Python"}}"""
+
+        print(f"[Gemini] Sending prompt to Gemini:\n{prompt[:500]}...")  # LOGGING (truncated)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt
+        )
+        print(f"[Gemini] Gemini response: {response.text.strip()}")  # LOGGING
+
+        # Parse JSON response
+        result = json.loads(response.text.strip())
+        return result.get("category", "General"), result.get("subject", "Other")
+
+    except Exception as e:
+        print(f"[Gemini] AI categorization failed: {e}")
+        return categorize_chat_fallback(title)
+
+def categorize_chat_fallback(title: str) -> tuple:
+    """Fallback categorization based on keywords"""
+    title_lower = title.lower()
+    
+    # Programming keywords
+    if any(word in title_lower for word in ['python', 'javascript', 'code', 'programming', 'debug', 'function', 'api', 'database']):
+        return "Programming", "Development"
+    
+    # Research keywords  
+    if any(word in title_lower for word in ['research', 'study', 'analysis', 'learn', 'understand', 'explain']):
+        return "Research", "Study"
+    
+    # Business keywords
+    if any(word in title_lower for word in ['business', 'marketing', 'strategy', 'plan', 'meeting', 'proposal']):
+        return "Business", "Planning"
+    
+    # Creative keywords
+    if any(word in title_lower for word in ['write', 'story', 'creative', 'design', 'art', 'blog']):
+        return "Creative", "Writing"
+    
+    return "General", "Other"
 
 # Health check endpoint
 @app.get("/health")
@@ -124,7 +203,7 @@ async def create_chat(
     
     if existing_chat:
         # Update existing chat
-        for field, value in chat_data.dict(exclude_unset=True).items():
+        for field, value in chat_data.model_dump(exclude_unset=True).items():
             if field != "timestamp":  # Don't update timestamp
                 setattr(existing_chat, field, value)
         existing_chat.updated_at = func.now()
@@ -159,7 +238,7 @@ async def update_chat(
         raise HTTPException(status_code=404, detail="Chat not found")
     
     # Update chat fields
-    for field, value in chat_data.dict(exclude_unset=True).items():
+    for field, value in chat_data.model_dump(exclude_unset=True).items():
         setattr(chat, field, value)
     
     chat.updated_at = func.now()
@@ -206,9 +285,9 @@ async def sync_chats(
         if existing_chat:
             # Update existing chat (preserve user-set category/subject)
             update_data = chat_data.model_dump(exclude_unset=True)
-            if existing_chat.category:
+            if existing_chat.category and existing_chat.category != "General":
                 update_data.pop('category', None)
-            if existing_chat.subject:
+            if existing_chat.subject and existing_chat.subject != "Other":
                 update_data.pop('subject', None)
             
             for field, value in update_data.items():
@@ -218,15 +297,31 @@ async def sync_chats(
             existing_chat.updated_at = func.now()
             updated_count += 1
         else:
-            # Create new chat
-            chat_dict = chat_data.dict() # Consider changing to model_dump()
+            # Create new chat with AI categorization
+            chat_dict = chat_data.model_dump()
             
-            # 1. Parse the string timestamp into a datetime object
-            # The .replace('Z', '+00:00') handles the Zulu time format for compatibility
-            parsed_timestamp = datetime.fromisoformat(chat_dict['timestamp'].replace('Z', '+00:00'))
-            chat_dict['timestamp'] = parsed_timestamp
+            # Parse timestamp if it's a string
+            if isinstance(chat_dict.get('timestamp'), str):
+                try:
+                    parsed_timestamp = datetime.fromisoformat(chat_dict['timestamp'].replace('Z', '+00:00'))
+                    chat_dict['timestamp'] = parsed_timestamp
+                except (ValueError, TypeError):
+                    chat_dict['timestamp'] = datetime.utcnow()
+            elif chat_dict.get('timestamp') is None:
+                chat_dict['timestamp'] = datetime.utcnow()
             
-            # 2. Create the Chat object with the corrected dictionary
+            # Auto-categorize if not already categorized
+            if not chat_dict.get('category') or not chat_dict.get('subject'):
+                category, subject = categorize_chat_with_ai(
+                    chat_dict['title'], 
+                    chat_dict.get('preview'), 
+                    chat_dict.get('description')
+                )
+                if not chat_dict.get('category'):
+                    chat_dict['category'] = category
+                if not chat_dict.get('subject'):
+                    chat_dict['subject'] = subject
+            
             chat = Chat(
                 user_id=current_user.id,
                 **chat_dict

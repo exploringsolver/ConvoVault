@@ -6,6 +6,7 @@ class ChatSyncPopup {
     this.filteredChats = [];
     this.isLoggedIn = false;
     this.stats = {};
+    this.searchQuery = '';
 
     this.init();
   }
@@ -92,6 +93,8 @@ class ChatSyncPopup {
         this.isLoggedIn = true;
         this.showLoggedInView(response.user);
         await this.loadChats(); // Reload chats after login
+        await this.loadStats(); // Reload stats
+        this.loadFilters(); // Reload filters
       }
     } catch (error) {
       this.showError('Login failed: ' + error.message);
@@ -151,6 +154,7 @@ class ChatSyncPopup {
         this.showSuccess(response.message);
         await this.loadStats();
         await this.loadChats();
+        this.loadFilters(); // Reload filters after sync
       }
     } catch (error) {
       this.showError('Sync failed: ' + error.message);
@@ -191,11 +195,15 @@ class ChatSyncPopup {
 
   loadFilters() {
     // Load categories and subjects for filters
-    const categories = [...new Set(this.chats.map(chat => chat.category).filter(Boolean))];
-    const subjects = [...new Set(this.chats.map(chat => chat.subject).filter(Boolean))];
+    const categories = [...new Set(this.chats.map(chat => chat.category).filter(Boolean))].sort();
+    const subjects = [...new Set(this.chats.map(chat => chat.subject).filter(Boolean))].sort();
 
     const categorySelect = document.getElementById('categoryFilter');
     const subjectSelect = document.getElementById('subjectFilter');
+
+    // Store current selections
+    const currentCategory = categorySelect.value;
+    const currentSubject = subjectSelect.value;
 
     // Clear existing options (except first)
     categorySelect.innerHTML = '<option value="">All Categories</option>';
@@ -214,6 +222,14 @@ class ChatSyncPopup {
       option.textContent = subject;
       subjectSelect.appendChild(option);
     });
+
+    // Restore selections if they still exist
+    if (categories.includes(currentCategory)) {
+      categorySelect.value = currentCategory;
+    }
+    if (subjects.includes(currentSubject)) {
+      subjectSelect.value = currentSubject;
+    }
   }
 
   switchTab(tab) {
@@ -256,7 +272,9 @@ class ChatSyncPopup {
       filtered = filtered.filter(chat =>
         chat.title.toLowerCase().includes(this.searchQuery) ||
         (chat.description && chat.description.toLowerCase().includes(this.searchQuery)) ||
-        (chat.preview && chat.preview.toLowerCase().includes(this.searchQuery))
+        (chat.preview && chat.preview.toLowerCase().includes(this.searchQuery)) ||
+        (chat.category && chat.category.toLowerCase().includes(this.searchQuery)) ||
+        (chat.subject && chat.subject.toLowerCase().includes(this.searchQuery))
       );
     }
 
@@ -286,10 +304,22 @@ class ChatSyncPopup {
   renderChatItem(chat) {
     const timeAgo = this.getTimeAgo(chat.timestamp);
     const providerClass = `provider-${chat.provider}`;
+    
+    // Show category and subject if available
+    const categoryTag = chat.category && chat.category !== 'General' 
+      ? `<span class="category-tag">${chat.category}</span>` 
+      : '';
+    const subjectTag = chat.subject && chat.subject !== 'Other' 
+      ? `<span class="subject-tag">${chat.subject}</span>` 
+      : '';
 
     return `
       <div class="chat-item" data-id="${chat.id}">
         <div class="chat-title">${this.escapeHtml(chat.title)}</div>
+        <div class="chat-tags">
+          ${categoryTag}
+          ${subjectTag}
+        </div>
         <div class="chat-meta">
           <span class="provider-badge ${providerClass}">${chat.provider}</span>
           <span>${timeAgo}</span>
@@ -349,6 +379,7 @@ class ChatSyncPopup {
         this.toggleAddForm();
         await this.loadChats();
         await this.loadStats();
+        this.loadFilters();
       }
     } catch (error) {
       this.showError('Failed to add chat: ' + error.message);
@@ -482,7 +513,6 @@ class ChatSyncPopup {
       } else {
         const count = response.chats?.length || 0;
         console.log(`[AutoScrape] Successfully scraped ${count} chats:`, response.chats);
-        this.logScrapedData(response.chats, provider);
         this.showScrapeStatus(`Found ${count} ${provider} chats`, 'success');
         
         // Auto-sync if logged in and chats found
@@ -515,26 +545,12 @@ class ChatSyncPopup {
     return null;
   }
 
-  logScrapedData(chats, provider) {
-    console.log(`\n=== SCRAPED DATA FROM ${provider.toUpperCase()} ===`);
-    chats.forEach((chat, index) => {
-      console.log(`\nChat ${index + 1}:`);
-      console.log(`  Title: "${chat.title}"`);
-      console.log(`  Link: ${chat.link}`);
-      console.log(`  Provider: ${chat.provider}`);
-      console.log(`  Timestamp: ${chat.timestamp}`);
-      if (chat.description) console.log(`  Description: ${chat.description}`);
-      if (chat.lastMessage) console.log(`  Last Message: ${chat.lastMessage}`);
-      if (chat.date) console.log(`  Date: ${chat.date}`);
-    });
-    console.log(`\n=== END ${provider.toUpperCase()} DATA (${chats.length} total) ===\n`);
-  }
-
   showScrapeStatus(message, type = 'info') {
     const statusEl = document.getElementById('scrapeStatus');
     if (statusEl) {
       statusEl.textContent = message;
       statusEl.className = `scrape-status ${type}`;
+      statusEl.classList.remove('hidden');
       
       // Auto-hide after 3 seconds for success/info messages
       if (type !== 'error') {
