@@ -5,7 +5,7 @@ class ChatSyncBackground {
   constructor() {
     this.storage = new ChatStorage();
     this.authToken = null;
-    this.backendUrl = 'http://localhost:3000'; // Default backend URL
+    this.backendUrl = 'http://panel.mait.ac.in:8001'; // Default backend URL
     this.syncInProgress = false;
   }
 
