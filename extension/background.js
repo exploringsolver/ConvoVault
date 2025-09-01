@@ -5,17 +5,17 @@ class ChatSyncBackground {
   constructor() {
     this.storage = new ChatStorage();
     this.authToken = null;
-    this.backendUrl = 'http://panel.mait.ac.in:8001'; // Default backend URL
+    this.backendUrl = 'http://localhost:8000'; 
     this.syncInProgress = false;
+    this.scrapeInProgress = false;
+    this.lastScrapeTime = new Map(); // Track per-tab scraping
+    this.scrapeThrottle = 5000; // 5 seconds between scrapes per tab
   }
 
   async init() {
     await this.storage.init();
-
-    // Load auth token from storage
     this.authToken = await this.storage.getSetting('authToken');
-
-    // Load backend URL from storage
+    
     const savedBackendUrl = await this.storage.getSetting('backendUrl');
     if (savedBackendUrl) {
       this.backendUrl = savedBackendUrl;
@@ -23,7 +23,7 @@ class ChatSyncBackground {
 
     console.log('ChatSync background script initialized');
     
-    // Auto-fetch chats if logged in
+    // Only fetch chats if logged in, but don't auto-scrape
     if (this.authToken) {
       await this.fetchAndMergeBackendChats();
     }
@@ -31,17 +31,13 @@ class ChatSyncBackground {
 
   // Handle messages from content scripts and popup
   handleMessage(request, sender, sendResponse) {
-    console.log('Background received message:', request);
+    console.log('Background received message:', request.type);
 
     switch (request.type) {
       case 'CHATS_EXTRACTED':
         this.handleExtractedChats(request);
         sendResponse({ success: true });
         break;
-
-      case 'MANUAL_SCRAPE':
-        this.handleManualScrape(request, sendResponse);
-        return true;
 
       case 'AUTO_SCRAPE':
         this.handleAutoScrape(request, sendResponse);
@@ -100,45 +96,71 @@ class ChatSyncBackground {
     }
   }
 
-  // Handle extracted chats from content scripts
+  // Handle extracted chats from content scripts - PREVENT RECURSIVE CALLS
   async handleExtractedChats(request) {
     try {
       const { chats, provider, url } = request;
-      console.log(`[HandleExtracted] Saving ${chats.length} chats from ${provider}`);
+      console.log(`[HandleExtracted] Received ${chats.length} chats from ${provider}`);
       
+      // Save chats without triggering additional scraping
       const savedChats = await this.storage.saveChats(chats);
       console.log(`[HandleExtracted] Saved ${savedChats.length} chats to local storage`);
 
-      // Optionally trigger background sync if user is logged in
-      if (this.authToken && !this.syncInProgress) {
-        this.backgroundSync();
-      }
+      // DO NOT trigger background sync here to prevent loops
+      // Let user manually sync when needed
 
     } catch (error) {
       console.error('[HandleExtracted] Error handling extracted chats:', error);
     }
   }
 
-  // Handle auto scrape request from popup
+  // Handle auto scrape request from popup - WITH THROTTLING
   async handleAutoScrape(request, sendResponse) {
     try {
       const { provider, tabId } = request;
+      
+      // Check throttling per tab
+      const now = Date.now();
+      const lastScrape = this.lastScrapeTime.get(tabId) || 0;
+      
+      if (now - lastScrape < this.scrapeThrottle) {
+        console.log(`[AutoScrape] Throttled for tab ${tabId}`);
+        sendResponse({ 
+          error: 'Scraping throttled - please wait a few seconds',
+          chats: [] 
+        });
+        return;
+      }
+
+      if (this.scrapeInProgress) {
+        console.log('[AutoScrape] Scrape already in progress');
+        sendResponse({ 
+          error: 'Scrape already in progress',
+          chats: [] 
+        });
+        return;
+      }
+
+      this.scrapeInProgress = true;
+      this.lastScrapeTime.set(tabId, now);
+      
       console.log(`[AutoScrape] Auto-scraping ${provider} from tab ${tabId}`);
 
-      // First, try to inject the content script manually if needed
+      // Try to inject content script if needed
       try {
         await this.ensureContentScriptLoaded(tabId, provider);
       } catch (injectionError) {
         console.warn('[AutoScrape] Content script injection failed:', injectionError);
       }
 
-      // Wait a moment for content script to initialize
+      // Wait for content script to initialize
       setTimeout(() => {
-        // Send message to content script in the specific tab
         chrome.tabs.sendMessage(tabId, {
           type: 'MANUAL_SCRAPE',
           provider: provider
         }, (response) => {
+          this.scrapeInProgress = false;
+          
           if (chrome.runtime.lastError) {
             console.error('[AutoScrape] Content script communication failed:', chrome.runtime.lastError.message);
             this.fallbackDirectScraping(tabId, provider, sendResponse);
@@ -156,9 +178,10 @@ class ChatSyncBackground {
             });
           }
         });
-      }, 500);
+      }, 1000);
 
     } catch (error) {
+      this.scrapeInProgress = false;
       console.error('[AutoScrape] Error:', error);
       sendResponse({ error: error.message, chats: [] });
     }
@@ -241,7 +264,6 @@ class ChatSyncBackground {
         }
         
         try {
-          // Try nav approach
           document.querySelectorAll("nav a[href^='/c/']").forEach((el) => {
             const title = el.innerText.trim();
             const link = el.href;
@@ -250,7 +272,6 @@ class ChatSyncBackground {
             }
           });
           
-          // Try history approach if no results
           if (chats.length === 0) {
             document.querySelectorAll('#history a').forEach((el) => {
               const titleEl = el.querySelector('.truncate span') || el.querySelector('span');
@@ -284,7 +305,6 @@ class ChatSyncBackground {
         }
         
         try {
-          // Try sidebar approach
           document.querySelectorAll('li div.relative.group\\/row a').forEach((el) => {
             const titleEl = el.querySelector('span');
             const title = titleEl?.textContent.trim() || el.textContent.trim();
@@ -294,7 +314,6 @@ class ChatSyncBackground {
             }
           });
           
-          // Try recents approach if no results
           if (chats.length === 0) {
             document.querySelectorAll("ul.flex.flex-col.gap-3 > li").forEach(li => {
               const linkEl = li.querySelector("a[href]");
@@ -329,7 +348,6 @@ class ChatSyncBackground {
         }
         
         try {
-          // Try sidebar approach
           document.querySelectorAll('.group\\/history a[data-testid^="thread-title"]').forEach((el) => {
             const titleEl = el.querySelector('span');
             const title = titleEl?.textContent.trim() || el.textContent.trim();
@@ -339,7 +357,6 @@ class ChatSyncBackground {
             }
           });
           
-          // Try library approach if no results
           if (chats.length === 0) {
             document.querySelectorAll('div.relative.divide-y.border-borderMain\\/50.ring-borderMain\\/50.divide-borderMain\\/50.bg-transparent > div').forEach((el) => {
               const linkEl = el.querySelector('a[href]');
@@ -362,56 +379,7 @@ class ChatSyncBackground {
     return scrapingFunctions[provider] || (() => []);
   }
 
-  // Handle manual scrape request
-  async handleManualScrape(request, sendResponse) {
-    try {
-      const { provider } = request;
-
-      // Get active tab and send scrape message to content script
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-
-      if (!tab) {
-        sendResponse({ error: 'No active tab found' });
-        return;
-      }
-
-      // Check if the tab URL matches the provider
-      const urlMatches = this.checkProviderUrl(tab.url, provider);
-      if (!urlMatches) {
-        sendResponse({ error: `Current tab is not a ${provider} page` });
-        return;
-      }
-
-      // Send message to content script
-      chrome.tabs.sendMessage(tab.id, {
-        type: 'MANUAL_SCRAPE',
-        provider: provider
-      }, (response) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: 'Failed to communicate with content script' });
-        } else {
-          sendResponse(response);
-        }
-      });
-
-    } catch (error) {
-      console.error('Error in manual scrape:', error);
-      sendResponse({ error: error.message });
-    }
-  }
-
-  // Check if URL matches provider
-  checkProviderUrl(url, provider) {
-    const patterns = {
-      chatgpt: ['chat.openai.com', 'chatgpt.com'],
-      claude: ['claude.ai'],
-      perplexity: ['perplexity.ai']
-    };
-
-    return patterns[provider]?.some(pattern => url.includes(pattern));
-  }
-
-  // Handle sync now request
+  // Handle sync now request - OPTIMIZED
   async handleSyncNow(sendResponse) {
     try {
       if (!this.authToken) {
@@ -487,7 +455,6 @@ class ChatSyncBackground {
         const backendChats = await response.json();
         console.log(`Fetching ${backendChats.length} chats from backend`);
         
-        // Convert backend chats to local format and mark as synced
         const chatsToSave = backendChats.map(chat => ({
           provider: chat.provider,
           title: chat.title,
@@ -499,7 +466,7 @@ class ChatSyncBackground {
           category: chat.category,
           subject: chat.subject,
           timestamp: chat.timestamp,
-          synced: true // Mark backend chats as synced
+          synced: true
         }));
         
         await this.storage.saveChats(chatsToSave);
@@ -510,42 +477,8 @@ class ChatSyncBackground {
     }
   }
 
-  // Background sync (periodic)
-  async backgroundSync() {
-    if (this.syncInProgress || !this.authToken) return;
-
-    try {
-      this.syncInProgress = true;
-      const unsyncedChats = await this.storage.getUnsyncedChats();
-
-      if (unsyncedChats.length > 0) {
-        const response = await fetch(`${this.backendUrl}/api/sync`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.authToken}`
-          },
-          body: JSON.stringify({ chats: unsyncedChats })
-        });
-
-        if (response.ok) {
-          const chatIds = unsyncedChats.map(chat => chat.id);
-          await this.storage.markChatsSynced(chatIds);
-          console.log(`Background sync: ${unsyncedChats.length} chats synced`);
-          
-          // Also fetch any new chats from backend
-          await this.fetchAndMergeBackendChats();
-        }
-      } else {
-        // Even if no local chats to sync, fetch backend chats periodically
-        await this.fetchAndMergeBackendChats();
-      }
-    } catch (error) {
-      console.error('Background sync error:', error);
-    } finally {
-      this.syncInProgress = false;
-    }
-  }
+  // REMOVE auto background sync to prevent spam
+  // Only sync when user manually requests it
 
   // Handle login
   async handleLogin(request, sendResponse) {
@@ -568,10 +501,7 @@ class ChatSyncBackground {
       const result = await response.json();
       this.authToken = result.access_token;
 
-      // Save token to storage
       await this.storage.setSetting('authToken', this.authToken);
-
-      // Fetch backend chats after login
       await this.fetchAndMergeBackendChats();
 
       sendResponse({ success: true, user: result.user });
@@ -600,7 +530,6 @@ class ChatSyncBackground {
         throw new Error(error.detail || 'Registration failed');
       }
 
-      const result = await response.json();
       sendResponse({ success: true, message: 'Registration successful' });
 
     } catch (error) {
@@ -626,24 +555,20 @@ class ChatSyncBackground {
       const { provider, category, subject } = request;
 
       let chats;
-
       if (provider) {
         chats = await this.storage.getChatsByProvider(provider);
       } else {
         chats = await this.storage.getAllChats();
       }
 
-      // Filter by category
       if (category) {
         chats = chats.filter(chat => chat.category === category);
       }
 
-      // Filter by subject
       if (subject) {
         chats = chats.filter(chat => chat.subject === subject);
       }
 
-      // Sort by timestamp (newest first)
       chats.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
 
       sendResponse({ chats });
@@ -751,12 +676,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return chatSyncBackground.handleMessage(request, sender, sendResponse);
 });
 
-// Set up periodic background sync (every 5 minutes if logged in)
-chrome.alarms.create('backgroundSync', { periodInMinutes: 5 });
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'backgroundSync') {
-    chatSyncBackground.backgroundSync();
-  }
-});
+// REMOVE automatic periodic sync to prevent spam
+// Users can manually sync when needed
 
 console.log('ChatSync background script loaded');

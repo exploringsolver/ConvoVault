@@ -13,9 +13,9 @@ from dotenv import load_dotenv
 
 
 from models import (
-    User, Chat, UserCreate, UserLogin, UserResponse, 
-    ChatCreate, ChatUpdate, ChatResponse, Token,
-    SyncRequest, SyncResponse, ChatStats
+    User, Chat, Project, UserCreate, UserLogin, UserResponse, 
+    ChatCreate, ChatUpdate, ChatResponse, ProjectCreate, ProjectUpdate, ProjectResponse,
+    Token, SyncRequest, SyncResponse, ChatStats
 )
 from database import get_db, create_tables, connect_database, disconnect_database
 from auth import (
@@ -163,12 +163,98 @@ async def login(user_data: UserLogin, db: Session = Depends(get_db)):
         "user": UserResponse.from_orm(user)
     }
 
+# Project endpoints
+@app.get("/api/projects", response_model=List[ProjectResponse])
+async def get_projects(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get user's projects with chat counts."""
+    projects = db.query(Project).filter(
+        Project.user_id == current_user.id
+    ).order_by(Project.created_at).all()
+    
+    # Add chat counts
+    for project in projects:
+        project.chat_count = db.query(Chat).filter(
+            Chat.project_id == project.id,
+            Chat.is_archived == False
+        ).count()
+    
+    return projects
+
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(
+    project_data: ProjectCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new project."""
+    project = Project(
+        user_id=current_user.id,
+        **project_data.model_dump()
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    project.chat_count = 0
+    return project
+
+@app.put("/api/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(
+    project_id: int,
+    project_data: ProjectUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update a project."""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    for field, value in project_data.model_dump(exclude_unset=True).items():
+        setattr(project, field, value)
+    
+    project.updated_at = func.now()
+    db.commit()
+    db.refresh(project)
+    return project
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a project and move chats to unassigned."""
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    
+    # Move chats to unassigned
+    db.query(Chat).filter(Chat.project_id == project_id).update({"project_id": None})
+    
+    db.delete(project)
+    db.commit()
+    return {"message": "Project deleted successfully"}
+
 # Chat endpoints
 @app.get("/api/chats", response_model=List[ChatResponse])
 async def get_chats(
     provider: Optional[str] = None,
     category: Optional[str] = None,
     subject: Optional[str] = None,
+    project_id: Optional[int] = None,
+    is_archived: Optional[bool] = False,
+    is_bookmarked: Optional[bool] = None,
     limit: int = 100,
     offset: int = 0,
     current_user: User = Depends(get_current_user),
@@ -183,6 +269,15 @@ async def get_chats(
         query = query.filter(Chat.category == category)
     if subject:
         query = query.filter(Chat.subject == subject)
+    if project_id is not None:
+        if project_id == 0:  # Unassigned chats
+            query = query.filter(Chat.project_id.is_(None))
+        else:
+            query = query.filter(Chat.project_id == project_id)
+    if is_archived is not None:
+        query = query.filter(Chat.is_archived == is_archived)
+    if is_bookmarked is not None:
+        query = query.filter(Chat.is_bookmarked == is_bookmarked)
     
     chats = query.order_by(Chat.updated_at.desc()).offset(offset).limit(limit).all()
     return chats

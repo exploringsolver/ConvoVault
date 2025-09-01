@@ -1,24 +1,25 @@
-// ConvoVault Popup Script
+// ConvoVault Popup Script - Modern Project-Based Chat Management
 class ConvoVault {
   constructor() {
     this.API_BASE = 'http://localhost:8000/api';
     this.currentView = 'all';
+    this.currentFilter = {};
     this.chats = [];
     this.projects = [];
     this.isLoggedIn = false;
-    
+    this.selectedChats = new Set();
+    this.stats = {};
+
     this.init();
   }
 
   async init() {
     this.setupEventListeners();
     await this.checkAuthStatus();
-    
     if (this.isLoggedIn) {
       await this.loadProjects();
-      await this.loadChatsFromStorage(); // Load from storage first
-      await this.loadChatsFromBackend(); // Then from backend
-      await this.autoScrapeCurrentPage(); // Then scrape
+      await this.loadChats();
+      await this.autoScrapeCurrentPage();
     }
   }
 
@@ -53,13 +54,12 @@ class ConvoVault {
     document.getElementById('saveProjectBtn').addEventListener('click', () => this.saveProject());
     document.getElementById('saveChatBtn').addEventListener('click', () => this.saveChat());
 
-    // Edit modal
-    document.getElementById('cancelEditChatBtn').addEventListener('click', () => this.hideEditChatModal());
-    document.getElementById('saveEditChatBtn').addEventListener('click', () => this.saveEditChat());
-
     // Enter key handlers
     document.getElementById('password').addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.login();
+    });
+    document.getElementById('searchBox').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') this.search(e.target.value);
     });
   }
 
@@ -68,19 +68,23 @@ class ConvoVault {
     const token = localStorage.getItem('token');
     if (token) {
       try {
+        // Verify token by making a test request
         const response = await fetch(`${this.API_BASE}/chats?limit=1`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-
+        
         if (response.ok) {
           this.isLoggedIn = true;
           const userEmail = localStorage.getItem('userEmail');
           this.showLoggedInState(userEmail);
         } else {
-          localStorage.clear();
+          localStorage.removeItem('token');
+          localStorage.removeItem('userEmail');
         }
       } catch (error) {
-        localStorage.clear();
+        console.error('Auth check failed:', error);
+        localStorage.removeItem('token');
+        localStorage.removeItem('userEmail');
       }
     }
   }
@@ -110,15 +114,16 @@ class ConvoVault {
         this.isLoggedIn = true;
         this.showLoggedInState(data.user.email);
         this.showSuccess('Login successful!');
-
+        
+        // Load data
         await this.loadProjects();
-        await this.loadChatsFromStorage();
-        await this.loadChatsFromBackend();
+        await this.loadChats();
         await this.autoScrapeCurrentPage();
       } else {
         this.showError(data.detail || 'Login failed');
       }
     } catch (error) {
+      console.error('Login error:', error);
       this.showError('Network error. Please try again.');
     } finally {
       this.setLoading(false);
@@ -156,6 +161,7 @@ class ConvoVault {
         this.showError(data.detail || 'Registration failed');
       }
     } catch (error) {
+      console.error('Registration error:', error);
       this.showError('Network error. Please try again.');
     } finally {
       this.setLoading(false);
@@ -163,7 +169,8 @@ class ConvoVault {
   }
 
   logout() {
-    localStorage.clear();
+    localStorage.removeItem('token');
+    localStorage.removeItem('userEmail');
     this.isLoggedIn = false;
     this.showLoginForm();
     this.chats = [];
@@ -180,156 +187,6 @@ class ConvoVault {
   showLoginForm() {
     document.getElementById('loginForm').classList.remove('hidden');
     document.getElementById('loggedInView').classList.add('hidden');
-  }
-
-  // Load chats from localStorage first (for immediate display)
-  loadChatsFromStorage() {
-    const stored = localStorage.getItem('scrapedChats');
-    if (stored) {
-      const scrapedChats = JSON.parse(stored);
-      // Merge with existing chats, avoid duplicates
-      scrapedChats.forEach(chat => {
-        if (!this.chats.find(c => c.link === chat.link)) {
-          this.chats.unshift({...chat, id: Date.now() + Math.random(), isLocal: true});
-        }
-      });
-      this.renderChats();
-      this.updateCounts();
-    }
-  }
-
-  // Load chats from backend
-  async loadChatsFromBackend() {
-    if (!this.isLoggedIn) return;
-
-    try {
-      const params = new URLSearchParams();
-
-      if (this.currentView === 'bookmarked') {
-        params.set('is_bookmarked', 'true');
-      } else if (this.currentView === 'archived') {
-        params.set('is_archived', 'true');
-      } else if (this.currentView === 'unassigned') {
-        params.set('project_id', '0');
-      } else if (this.currentView === 'project') {
-        params.set('project_id', this.currentFilter.projectId);
-      } else if (['chatgpt', 'claude', 'perplexity'].includes(this.currentView)) {
-        params.set('provider', this.currentView);
-      }
-
-      if (!params.has('is_archived')) {
-        params.set('is_archived', 'false');
-      }
-
-      const response = await fetch(`${this.API_BASE}/chats?${params}`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-
-      if (response.ok) {
-        const backendChats = await response.json();
-        // Remove local chats that are now in backend
-        this.chats = this.chats.filter(c => c.isLocal !== true);
-        // Add backend chats
-        this.chats = [...backendChats, ...this.chats];
-        this.renderChats();
-        this.updateCounts();
-      }
-    } catch (error) {
-      console.error('Failed to load chats from backend:', error);
-    }
-  }
-
-  // Auto-scrape current page
-  async autoScrapeCurrentPage() {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) return;
-
-      const provider = this.detectProvider(tab.url);
-      if (!provider) return;
-
-      const response = await this.sendMessage({
-        type: 'AUTO_SCRAPE',
-        provider: provider,
-        tabId: tab.id
-      });
-
-      if (response.chats && response.chats.length > 0) {
-        // Store in localStorage
-        const existing = JSON.parse(localStorage.getItem('scrapedChats') || '[]');
-        const newChats = response.chats.filter(chat => 
-          !existing.find(e => e.link === chat.link)
-        );
-        
-        if (newChats.length > 0) {
-          const updated = [...existing, ...newChats];
-          localStorage.setItem('scrapedChats', JSON.stringify(updated));
-          
-          // Add to current view
-          newChats.forEach(chat => {
-            this.chats.unshift({...chat, id: Date.now() + Math.random(), isLocal: true});
-          });
-          
-          this.renderChats();
-          this.updateCounts();
-          this.showSuccess(`Found ${newChats.length} new chats`);
-        }
-      }
-    } catch (error) {
-      console.error('Auto-scrape failed:', error);
-    }
-  }
-
-  // Sync: Upload local chats to backend
-  async syncNow() {
-    if (!this.isLoggedIn) {
-      this.showError('Please login to sync');
-      return;
-    }
-
-    const syncBtn = document.getElementById('syncBtn');
-    const syncText = document.getElementById('syncText');
-    
-    syncBtn.disabled = true;
-    syncText.textContent = 'Syncing...';
-
-    try {
-      const scrapedChats = JSON.parse(localStorage.getItem('scrapedChats') || '[]');
-      
-      if (scrapedChats.length === 0) {
-        this.showSuccess('No chats to sync');
-        return;
-      }
-
-      const response = await fetch(`${this.API_BASE}/sync`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ chats: scrapedChats })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Clear local storage after successful sync
-        localStorage.removeItem('scrapedChats');
-        
-        this.showSuccess(`Sync completed! ${result.synced || scrapedChats.length} chats synced`);
-        
-        // Reload from backend
-        await this.loadChatsFromBackend();
-      } else {
-        const error = await response.json();
-        this.showError(error.detail || 'Sync failed');
-      }
-    } catch (error) {
-      this.showError('Sync failed. Please try again.');
-    } finally {
-      syncBtn.disabled = false;
-      syncText.textContent = 'Sync';
-    }
   }
 
   // Projects
@@ -409,16 +266,57 @@ class ConvoVault {
         this.showError(data.detail || 'Failed to create project');
       }
     } catch (error) {
+      console.error('Failed to create project:', error);
       this.showError('Network error. Please try again.');
     }
   }
 
-  setView(view, projectId = null) {
-    document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+  // Chats
+  async loadChats() {
+    if (!this.isLoggedIn) return;
 
+    try {
+      const params = new URLSearchParams();
+      
+      // Add filters based on current view
+      if (this.currentView === 'bookmarked') {
+        params.set('is_bookmarked', 'true');
+      } else if (this.currentView === 'archived') {
+        params.set('is_archived', 'true');
+      } else if (this.currentView === 'unassigned') {
+        params.set('project_id', '0');
+      } else if (this.currentView === 'project') {
+        params.set('project_id', this.currentFilter.projectId);
+      } else if (['chatgpt', 'claude', 'perplexity'].includes(this.currentView)) {
+        params.set('provider', this.currentView);
+      }
+
+      if (!params.has('is_archived')) {
+        params.set('is_archived', 'false');
+      }
+
+      const response = await fetch(`${this.API_BASE}/chats?${params}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+
+      if (response.ok) {
+        this.chats = await response.json();
+        this.renderChats();
+        this.updateCounts();
+      }
+    } catch (error) {
+      console.error('Failed to load chats:', error);
+    }
+  }
+
+  setView(view, projectId = null) {
+    // Update sidebar active state
+    document.querySelectorAll('.sidebar-item').forEach(item => item.classList.remove('active'));
+    
     this.currentView = view;
     this.currentFilter = projectId ? { projectId } : {};
 
+    // Set active sidebar item and content title
     let activeElement;
     if (view === 'all') {
       activeElement = document.getElementById('allChats');
@@ -444,31 +342,13 @@ class ConvoVault {
       activeElement.classList.add('active');
     }
 
-    this.filterAndRenderChats();
+    this.loadChats();
   }
 
-  filterAndRenderChats() {
-    let filtered = [...this.chats];
-
-    if (this.currentView === 'bookmarked') {
-      filtered = filtered.filter(chat => chat.is_bookmarked);
-    } else if (this.currentView === 'archived') {
-      filtered = filtered.filter(chat => chat.is_archived);
-    } else if (this.currentView === 'unassigned') {
-      filtered = filtered.filter(chat => !chat.project_id);
-    } else if (this.currentView === 'project') {
-      filtered = filtered.filter(chat => chat.project_id === this.currentFilter.projectId);
-    } else if (['chatgpt', 'claude', 'perplexity'].includes(this.currentView)) {
-      filtered = filtered.filter(chat => chat.provider === this.currentView);
-    }
-
-    this.renderChats(filtered);
-  }
-
-  renderChats(chatsToRender = this.chats) {
+  renderChats() {
     const chatList = document.getElementById('chatList');
-
-    if (chatsToRender.length === 0) {
+    
+    if (this.chats.length === 0) {
       chatList.innerHTML = `
         <div class="empty-state">
           <h3>No chats found</h3>
@@ -478,49 +358,25 @@ class ConvoVault {
       return;
     }
 
-    chatList.innerHTML = chatsToRender.map(chat => this.renderChatItem(chat)).join('');
-
-    // Add event listeners for each chat item
-    chatList.querySelectorAll('.bookmark-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const id = parseInt(btn.getAttribute('data-id'));
-        this.toggleBookmark(id);
-      });
-    });
-    chatList.querySelectorAll('.edit-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const id = parseInt(btn.getAttribute('data-id'));
-        this.editChat(id);
-      });
-    });
-    chatList.querySelectorAll('.open-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const link = btn.getAttribute('data-link');
-        this.openChat(link);
-      });
-    });
+    chatList.innerHTML = this.chats.map(chat => this.renderChatItem(chat)).join('');
   }
 
   renderChatItem(chat) {
-    const tags = chat.tags ? chat.tags.split(',').map(tag =>
+    const tags = chat.tags ? chat.tags.split(',').map(tag => 
       `<span class="tag">${tag.trim()}</span>`
     ).join('') : '';
 
     const date = chat.timestamp ? new Date(chat.timestamp).toLocaleDateString() : '';
-    const localBadge = chat.isLocal ? '<span class="tag" style="background: orange; color: white;">Local</span>' : '';
 
     return `
       <div class="chat-item" data-chat-id="${chat.id}">
         <div class="chat-header">
           <div class="chat-title">${this.escapeHtml(chat.title)}</div>
           <div class="chat-actions">
-            <button class="chat-action bookmark-btn" data-id="${chat.id}" title="Bookmark">
+            <button class="chat-action" onclick="window.chatManager.toggleBookmark(${chat.id})" title="Bookmark">
               ${chat.is_bookmarked ? '★' : '☆'}
             </button>
-            <button class="chat-action edit-btn" data-id="${chat.id}" title="Edit">
-              ✏
-            </button>
-            <button class="chat-action open-btn" data-link="${chat.link}" title="Open">
+            <button class="chat-action" onclick="window.chatManager.openChat('${chat.link}')" title="Open">
               ↗
             </button>
           </div>
@@ -529,7 +385,6 @@ class ConvoVault {
           <div class="chat-meta-left">
             <span class="provider-badge provider-${chat.provider}">${chat.provider}</span>
             ${date ? `<span>${date}</span>` : ''}
-            ${localBadge}
           </div>
           ${chat.project ? `<span style="color: ${chat.project.color}">• ${chat.project.name}</span>` : ''}
         </div>
@@ -538,137 +393,27 @@ class ConvoVault {
     `;
   }
 
+  // Chat Actions
   async toggleBookmark(chatId) {
     try {
       const chat = this.chats.find(c => c.id === chatId);
       if (!chat) return;
 
-      // Update locally first
-      chat.is_bookmarked = !chat.is_bookmarked;
-      this.updateLocalStorage();
-      this.renderChats();
-      this.updateCounts();
-
-      // If it's a local chat, just update localStorage
-      if (chat.isLocal) {
-        this.updateScrapedChatsStorage();
-        return;
-      }
-
-      // If it's a backend chat, sync to backend
       const response = await fetch(`${this.API_BASE}/chats/${chatId}`, {
         method: 'PUT',
         headers: {
           'Authorization': `Bearer ${localStorage.getItem('token')}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ is_bookmarked: chat.is_bookmarked })
+        body: JSON.stringify({ is_bookmarked: !chat.is_bookmarked })
       });
 
-      if (!response.ok) {
-        // Revert on error
-        chat.is_bookmarked = !chat.is_bookmarked;
-        this.renderChats();
-        this.updateCounts();
-        this.showError('Failed to update bookmark');
+      if (response.ok) {
+        await this.loadChats();
       }
     } catch (error) {
       console.error('Failed to toggle bookmark:', error);
-      this.showError('Failed to update bookmark');
     }
-  }
-
-  editChat(chatId) {
-    const chat = this.chats.find(c => c.id === chatId);
-    if (!chat) return;
-
-    // Populate edit modal
-    document.getElementById('editChatId').value = chat.id;
-    document.getElementById('editChatTitle').value = chat.title;
-    document.getElementById('editChatTags').value = chat.tags || '';
-    
-    // Populate project dropdown
-    const projectSelect = document.getElementById('editChatProject');
-    projectSelect.innerHTML = '<option value="">Unassigned</option>';
-    this.projects.forEach(project => {
-      const selected = chat.project_id === project.id ? 'selected' : '';
-      projectSelect.innerHTML += `<option value="${project.id}" ${selected}>${project.name}</option>`;
-    });
-
-    document.getElementById('editChatModal').classList.remove('hidden');
-  }
-
-  hideEditChatModal() {
-    document.getElementById('editChatModal').classList.add('hidden');
-  }
-
-  async saveEditChat() {
-    const chatId = parseInt(document.getElementById('editChatId').value);
-    const title = document.getElementById('editChatTitle').value.trim();
-    const tags = document.getElementById('editChatTags').value.trim();
-    const projectId = document.getElementById('editChatProject').value;
-
-    if (!title) {
-      this.showError('Title is required');
-      return;
-    }
-
-    try {
-      const chat = this.chats.find(c => c.id === chatId);
-      if (!chat) return;
-
-      // Update locally first
-      chat.title = title;
-      chat.tags = tags;
-      chat.project_id = projectId ? parseInt(projectId) : null;
-      chat.project = projectId ? this.projects.find(p => p.id === parseInt(projectId)) : null;
-
-      this.updateLocalStorage();
-      this.renderChats();
-      this.updateCounts();
-      this.hideEditChatModal();
-      this.showSuccess('Chat updated locally');
-
-      // If it's a local chat, update localStorage
-      if (chat.isLocal) {
-        this.updateScrapedChatsStorage();
-        return;
-      }
-
-      // If it's a backend chat, sync to backend
-      const updateData = { title, tags };
-      if (projectId) updateData.project_id = parseInt(projectId);
-
-      const response = await fetch(`${this.API_BASE}/chats/${chatId}`, {
-        method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(updateData)
-      });
-
-      if (!response.ok) {
-        this.showError('Failed to sync changes to backend');
-      }
-    } catch (error) {
-      console.error('Failed to update chat:', error);
-      this.showError('Failed to update chat');
-    }
-  }
-
-  updateScrapedChatsStorage() {
-    const scrapedChats = this.chats.filter(c => c.isLocal);
-    localStorage.setItem('scrapedChats', JSON.stringify(scrapedChats));
-  }
-
-  updateLocalStorage() {
-    // Store all chats locally for immediate updates
-    const localChats = this.chats.map(chat => ({
-      ...chat,
-      locallyModified: true
-    }));
-    localStorage.setItem('localChats', JSON.stringify(localChats));
   }
 
   openChat(url) {
@@ -676,12 +421,13 @@ class ConvoVault {
   }
 
   showChatModal() {
+    // Populate project dropdown
     const projectSelect = document.getElementById('chatProject');
     projectSelect.innerHTML = '<option value="">Unassigned</option>';
     this.projects.forEach(project => {
       projectSelect.innerHTML += `<option value="${project.id}">${project.name}</option>`;
     });
-
+    
     document.getElementById('chatModal').classList.remove('hidden');
   }
 
@@ -728,19 +474,21 @@ class ConvoVault {
       if (response.ok) {
         this.hideChatModal();
         this.showSuccess('Chat added successfully!');
-        await this.loadChatsFromBackend();
+        await this.loadChats();
       } else {
         const data = await response.json();
         this.showError(data.detail || 'Failed to add chat');
       }
     } catch (error) {
+      console.error('Failed to add chat:', error);
       this.showError('Network error. Please try again.');
     }
   }
 
+  // Search
   search(query) {
     if (!query.trim()) {
-      this.filterAndRenderChats();
+      this.renderChats();
       return;
     }
 
@@ -750,20 +498,121 @@ class ConvoVault {
       (chat.tags && chat.tags.toLowerCase().includes(query.toLowerCase()))
     );
 
-    this.renderChats(filteredChats);
+    const chatList = document.getElementById('chatList');
+    if (filteredChats.length === 0) {
+      chatList.innerHTML = `
+        <div class="empty-state">
+          <h3>No results found</h3>
+          <p>Try different search terms</p>
+        </div>
+      `;
+    } else {
+      chatList.innerHTML = filteredChats.map(chat => this.renderChatItem(chat)).join('');
+    }
+  }
+
+  // Sync functionality
+  async syncNow() {
+    if (!this.isLoggedIn) {
+      this.showError('Please login to sync');
+      return;
+    }
+
+    const syncBtn = document.getElementById('syncBtn');
+    const syncText = document.getElementById('syncText');
+    
+    syncBtn.disabled = true;
+    syncText.textContent = 'Syncing...';
+
+    try {
+      await this.autoScrapeCurrentPage();
+      await this.loadChats();
+      this.showSuccess('Sync completed!');
+    } catch (error) {
+      console.error('Sync failed:', error);
+      this.showError('Sync failed. Please try again.');
+    } finally {
+      syncBtn.disabled = false;
+      syncText.textContent = 'Sync';
+    }
+  }
+
+  async autoScrapeCurrentPage() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const url = tab.url;
+      
+      if (url.includes('chatgpt.com') || url.includes('claude.ai') || url.includes('perplexity.ai')) {
+        const [result] = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          function: this.extractChatData
+        });
+
+        if (result?.result && this.isLoggedIn) {
+          await this.syncChatData([result.result]);
+        }
+      }
+    } catch (error) {
+      console.error('Auto-scrape failed:', error);
+    }
+  }
+
+  extractChatData() {
+    const url = window.location.href;
+    let provider, title = document.title;
+
+    if (url.includes('chatgpt.com')) {
+      provider = 'chatgpt';
+    } else if (url.includes('claude.ai')) {
+      provider = 'claude';
+    } else if (url.includes('perplexity.ai')) {
+      provider = 'perplexity';
+    } else {
+      return null;
+    }
+
+    return {
+      provider,
+      title: title.replace(' - ChatGPT', '').replace(' - Claude', '').replace(' - Perplexity', ''),
+      link: url.split('?')[0],
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  async syncChatData(chats) {
+    try {
+      const response = await fetch(`${this.API_BASE}/sync`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ chats })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Sync result:', result);
+      }
+    } catch (error) {
+      console.error('Sync failed:', error);
+    }
   }
 
   updateCounts() {
-    const total = this.chats.length;
+    // Update sidebar counts based on current data
+    document.getElementById('totalCount').textContent = this.chats.length;
+    
+    // Count by different criteria
     const bookmarked = this.chats.filter(c => c.is_bookmarked).length;
     const archived = this.chats.filter(c => c.is_archived).length;
     const unassigned = this.chats.filter(c => !c.project_id).length;
-
-    document.getElementById('totalCount').textContent = total;
+    
     document.getElementById('bookmarkedCount').textContent = bookmarked;
     document.getElementById('archivedCount').textContent = archived;
     document.getElementById('unassignedCount').textContent = unassigned;
 
+    // Provider counts
     const chatgpt = this.chats.filter(c => c.provider === 'chatgpt').length;
     const claude = this.chats.filter(c => c.provider === 'claude').length;
     const perplexity = this.chats.filter(c => c.provider === 'perplexity').length;
@@ -773,6 +622,7 @@ class ConvoVault {
     document.getElementById('perplexityCount').textContent = perplexity;
   }
 
+  // Utility methods
   setLoading(loading) {
     const elements = ['loginBtn', 'registerBtn'];
     elements.forEach(id => {
@@ -780,36 +630,6 @@ class ConvoVault {
       if (element) {
         element.disabled = loading;
       }
-    });
-  }
-
-  detectProvider(url) {
-    if (!url) return null;
-    
-    const providers = {
-      'chat.openai.com': 'chatgpt',
-      'chatgpt.com': 'chatgpt',
-      'claude.ai': 'claude',
-      'perplexity.ai': 'perplexity'
-    };
-
-    for (const [domain, provider] of Object.entries(providers)) {
-      if (url.includes(domain)) {
-        return provider;
-      }
-    }
-    return null;
-  }
-
-  sendMessage(message) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-        } else {
-          resolve(response);
-        }
-      });
     });
   }
 
@@ -824,10 +644,11 @@ class ConvoVault {
   showMessage(message, type) {
     const errorMsg = document.getElementById('errorMsg');
     const successMsg = document.getElementById('successMsg');
-
+    
+    // Hide both first
     errorMsg.classList.add('hidden');
     successMsg.classList.add('hidden');
-
+    
     if (type === 'error') {
       errorMsg.textContent = message;
       errorMsg.classList.remove('hidden');

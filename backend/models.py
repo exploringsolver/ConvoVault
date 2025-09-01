@@ -19,14 +19,32 @@ class User(Base):
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
     is_active = Column(Boolean, default=True)
     
-    # Relationship to chats
+    # Relationships
     chats = relationship("Chat", back_populates="user")
+    projects = relationship("Project", back_populates="user")
+
+class Project(Base):
+    __tablename__ = "projects"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    color = Column(String, default="#667eea")  # Hex color for UI
+    is_archived = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=func.now())
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+    
+    # Relationships
+    user = relationship("User", back_populates="projects")
+    chats = relationship("Chat", back_populates="project")
 
 class Chat(Base):
     __tablename__ = "chats"
     
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=True)
     
     # Core chat data
     provider = Column(String, nullable=False, index=True)  # chatgpt, claude, perplexity, user
@@ -42,6 +60,9 @@ class Chat(Base):
     # User organization
     category = Column(String, nullable=True, index=True)
     subject = Column(String, nullable=True, index=True)
+    tags = Column(String, nullable=True)  # Comma-separated tags
+    is_bookmarked = Column(Boolean, default=False)
+    is_archived = Column(Boolean, default=False)
     
     # System fields
     timestamp = Column(DateTime, default=func.now())
@@ -53,10 +74,35 @@ class Chat(Base):
         UniqueConstraint('user_id', 'provider', 'link', name='unique_user_chat'),
     )
     
-    # Relationship to user
+    # Relationships
     user = relationship("User", back_populates="chats")
+    project = relationship("Project", back_populates="chats")
 
 # Pydantic Models for API
+class ProjectBase(BaseModel):
+    name: str = Field(..., description="Project name")
+    description: Optional[str] = Field(None, description="Project description")
+    color: str = Field("#667eea", description="Project color in hex")
+
+class ProjectCreate(ProjectBase):
+    pass
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = None
+    is_archived: Optional[bool] = None
+
+class ProjectResponse(ProjectBase):
+    id: int
+    user_id: int
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+    chat_count: Optional[int] = 0
+    
+    model_config = ConfigDict(from_attributes=True)
+
 class ChatBase(BaseModel):
     provider: str = Field(..., description="AI provider: chatgpt, claude, perplexity, or user")
     title: str = Field(..., description="Chat title")
@@ -67,6 +113,10 @@ class ChatBase(BaseModel):
     date: Optional[str] = Field(None, description="Provider-specific date")
     category: Optional[str] = Field(None, description="User-assigned category")
     subject: Optional[str] = Field(None, description="User-assigned subject")
+    tags: Optional[str] = Field(None, description="Comma-separated tags")
+    project_id: Optional[int] = Field(None, description="Project ID")
+    is_bookmarked: Optional[bool] = Field(False, description="Is chat bookmarked")
+    is_archived: Optional[bool] = Field(False, description="Is chat archived")
     timestamp: Optional[datetime] = Field(None, description="ISO timestamp when first seen")
     
 class ChatCreate(ChatBase):
@@ -78,12 +128,17 @@ class ChatUpdate(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     subject: Optional[str] = None
+    tags: Optional[str] = None
+    project_id: Optional[int] = None
+    is_bookmarked: Optional[bool] = None
+    is_archived: Optional[bool] = None
 
 class ChatResponse(ChatBase):
     id: int
     user_id: int
     created_at: datetime
     updated_at: datetime
+    project: Optional[ProjectResponse] = None
 
     # Updated to modern Pydantic V2 style
     model_config = ConfigDict(from_attributes=True)
